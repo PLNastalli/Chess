@@ -10,13 +10,16 @@ use std::{
 };
 
 pub const PORT: u16 = 50555;
-const PROTOCOL: u16 = 1;
+const PROTOCOL: u16 = 2;
+/// Maximum Unicode characters in a chat message.
+pub const MAX_CHAT_CHARS: usize = 400;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
     Hello { version: u16 },
     Move { ply: usize, uci: String },
+    Chat { text: String },
     Resign,
 }
 
@@ -27,6 +30,20 @@ pub enum Event {
     Message(Message),
     Disconnected,
     Error(String),
+}
+
+/// Removes control characters and rejects empty or excessively long chat messages.
+pub fn normalize_chat_text(raw: &str) -> Option<String> {
+    let normalized: String = raw
+        .chars()
+        .take(MAX_CHAT_CHARS + 1)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    if normalized.chars().count() > MAX_CHAT_CHARS {
+        return None;
+    }
+    let text = normalized.trim().to_string();
+    (!text.is_empty()).then_some(text)
 }
 
 pub struct Peer {
@@ -95,6 +112,11 @@ impl Peer {
     }
 
     pub fn send(&self, message: Message) -> Result<(), String> {
+        if let Message::Chat { text } = &message
+            && normalize_chat_text(text).as_deref() != Some(text.as_str())
+        {
+            return Err(format!("Mensagem inválida (máximo de {MAX_CHAT_CHARS} caracteres)."));
+        }
         self.outgoing.send(message).map_err(|_| "Conexão encerrada".to_string())
     }
 }
@@ -158,6 +180,14 @@ fn serve(stream: TcpStream, tx: Sender<Event>, rx: Receiver<Message>, stop: Arc<
                         let _ = tx.send(Event::Error("Versão P2P incompatível".into()));
                         break;
                     }
+                    Ok(Message::Chat { text }) if authenticated => {
+                        if normalize_chat_text(&text).as_deref() == Some(text.as_str()) {
+                            let _ = tx.send(Event::Message(Message::Chat { text }));
+                        } else {
+                            let _ = tx.send(Event::Error("Mensagem de chat inválida.".into()));
+                            break;
+                        }
+                    }
                     Ok(message) if authenticated => { let _ = tx.send(Event::Message(message)); }
                     _ => {
                         let _ = tx.send(Event::Error("Pacote P2P inválido".into()));
@@ -210,6 +240,41 @@ mod tests {
         guest.send(Message::Move { ply: 1, uci: "e7e5".into() }).unwrap();
         let event = host.incoming.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(matches!(event, Event::Message(Message::Move { ply: 1, uci }) if uci == "e7e5"));
+    }
+
+    #[test]
+    fn chat_round_trip_over_p2p() {
+        let host = Peer::start(None, "127.0.0.1:0".into());
+        let listen = host.incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Event::Listening(address) = listen else {
+            panic!("expected listener address");
+        };
+        let guest = Peer::join(address);
+        assert!(matches!(host.incoming.recv_timeout(Duration::from_secs(5)), Ok(Event::Connected)));
+        assert!(matches!(guest.incoming.recv_timeout(Duration::from_secs(5)), Ok(Event::Connected)));
+
+        let greeting = Message::Chat { text: "Olá! Boa partida ♟".into() };
+        host.send(greeting.clone()).unwrap();
+        assert!(matches!(
+            guest.incoming.recv_timeout(Duration::from_secs(5)),
+            Ok(Event::Message(message)) if message == greeting
+        ));
+        let reply = Message::Chat { text: "Good luck!".into() };
+        guest.send(reply.clone()).unwrap();
+        assert!(matches!(
+            host.incoming.recv_timeout(Duration::from_secs(5)),
+            Ok(Event::Message(message)) if message == reply
+        ));
+    }
+
+    #[test]
+    fn validates_chat_text() {
+        assert_eq!(normalize_chat_text("  Olá, mundo!  "), Some("Olá, mundo!".into()));
+        assert_eq!(normalize_chat_text("a\nb\t"), Some("a b".into()));
+        assert_eq!(normalize_chat_text("  \n\r"), None);
+        assert_eq!(normalize_chat_text(&"x".repeat(MAX_CHAT_CHARS)), Some("x".repeat(MAX_CHAT_CHARS)));
+        assert_eq!(normalize_chat_text(&"x".repeat(MAX_CHAT_CHARS + 1)), None);
+        assert_eq!(normalize_chat_text(&"♟".repeat(MAX_CHAT_CHARS)).unwrap().chars().count(), MAX_CHAT_CHARS);
     }
 
     #[test]

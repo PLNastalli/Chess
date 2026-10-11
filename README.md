@@ -10,6 +10,7 @@ Aplicativo desktop de xadrez em **Rust**, com interface **GPUI** (motor de rende
 - Modo local para dois jogadores na mesma máquina.
 - Motor de xadrez próprio em Rust: negamax com poda alfa-beta, avaliação material/posicional e ordenação de capturas, profundidade 3. **Não é Stockfish e não tem classificação Elo aferida.**
 - Multiplayer **P2P TCP** entre dois computadores, sem servidor central, com handshake e validação de movimentos.
+- **Chat P2P integrado à partida**, com mensagens instantâneas, envio por Enter ou botão e histórico em memória (até 100 mensagens).
 - Histórico de jogadas com notação SAN.
 
 ## Requisitos
@@ -34,7 +35,9 @@ O aplicativo abre um tabuleiro. Escolha **Duas pessoas**, **Jogar contra o motor
 2. Jogador B abre o aplicativo, escreve `IP_DO_A:50555` no campo de endereço e clica **Entrar pelo IP (pretas)**.
 3. O tabuleiro das pretas será invertido automaticamente.
 
-A porta é **TCP 50555**. Para conexões entre redes diferentes, o anfitrião precisa permitir essa porta no firewall e no roteador (redirecionamento de porta), ou ambos precisam estar numa VPN privada que permita conexões diretas. **Não há STUN/TURN, matchmaking, criptografia de ponta a ponta, contas, ranking, anticheat, relógio nem reconexão automática nesta versão.** Evite expor a porta TCP à internet sem compreender esses limites.
+O chat aparece no painel lateral assim que você entra numa partida P2P. Pressione **Enter** ou clique em **Enviar**. Cada mensagem tem até **400 caracteres**, e o histórico é apagado ao começar outra partida.
+
+A porta é **TCP 50555**. Para conexões entre redes diferentes, o anfitrião precisa permitir essa porta no firewall e no roteador (redirecionamento de porta), ou ambos precisam estar numa VPN privada que permita conexões diretas. **O chat usa TCP direto sem criptografia e não é privado contra interceptação na rede.** Não envie senhas ou dados sensíveis. **Não há STUN/TURN, matchmaking, criptografia de ponta a ponta, contas, ranking, anticheat, relógio nem reconexão automática nesta versão.** Evite expor a porta TCP à internet sem compreender esses limites.
 
 ### Jogabilidade
 

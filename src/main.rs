@@ -4,11 +4,11 @@ mod network;
 
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
 };
 use gpui_kit::*;
 use shakmaty::{Color, Position, Role, Square};
-use std::{sync::mpsc::{self, Receiver}, time::Duration};
+use std::{collections::VecDeque, sync::mpsc::{self, Receiver}, time::Duration};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -16,6 +16,14 @@ enum Mode {
     Computer,
     P2p,
 }
+
+#[derive(Clone)]
+struct ChatEntry {
+    mine: bool,
+    text: String,
+}
+
+const MAX_CHAT_HISTORY: usize = 100;
 
 struct ChessApp {
     game: game::Game,
@@ -26,6 +34,9 @@ struct ChessApp {
     peer: Option<network::Peer>,
     engine_result: Option<Receiver<Option<String>>>,
     address: Entity<InputState>,
+    chat_input: Entity<InputState>,
+    _chat_subscription: Subscription,
+    chat_messages: VecDeque<ChatEntry>,
     notice: String,
     promotion: Role,
     game_over: Option<String>,
@@ -33,6 +44,18 @@ struct ChessApp {
 
 impl ChessApp {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let chat_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Escreva uma mensagem...")
+        });
+        let chat_subscription = cx.subscribe_in(
+            &chat_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.send_chat(window, cx);
+                }
+            },
+        );
         Self {
             game: game::Game::default(),
             selected: None,
@@ -46,6 +69,9 @@ impl ChessApp {
                     .placeholder("IP do anfitrião:50555")
                     .default_value("127.0.0.1:50555")
             }),
+            chat_input,
+            _chat_subscription: chat_subscription,
+            chat_messages: VecDeque::new(),
             notice: "Escolha o modo de jogo.".into(),
             promotion: Role::Queen,
             game_over: None,
@@ -84,6 +110,11 @@ impl ChessApp {
                     } else {
                         self.selected = None;
                         self.notice = format!("Adversário jogou {uci}");
+                    }
+                }
+                network::Event::Message(network::Message::Chat { text }) => {
+                    if self.mode == Mode::P2p && self.connected {
+                        self.add_chat_message(false, text);
                     }
                 }
                 network::Event::Message(network::Message::Resign) => {
@@ -131,11 +162,46 @@ impl ChessApp {
         self.peer = None;
         self.engine_result = None;
         self.game_over = None;
+        self.chat_messages.clear();
         self.notice = match mode {
             Mode::Local => "Partida local. Brancas começam.".into(),
             Mode::Computer => "Você joga de brancas contra o motor.".into(),
             Mode::P2p => "Configurando conexão P2P...".into(),
         };
+        cx.notify();
+    }
+
+    fn add_chat_message(&mut self, mine: bool, text: String) {
+        if self.chat_messages.len() == MAX_CHAT_HISTORY {
+            self.chat_messages.pop_front();
+        }
+        self.chat_messages.push_back(ChatEntry { mine, text });
+    }
+
+    fn send_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode != Mode::P2p || !self.connected {
+            self.notice = "Conecte-se a um adversário para usar o chat.".into();
+            cx.notify();
+            return;
+        }
+        let draft = self.chat_input.read(cx).value().to_string();
+        let Some(text) = network::normalize_chat_text(&draft) else {
+            self.notice = format!(
+                "Digite uma mensagem de até {} caracteres.",
+                network::MAX_CHAT_CHARS
+            );
+            cx.notify();
+            return;
+        };
+        let result = self.peer.as_ref().ok_or_else(|| "Conexão P2P indisponível.".to_string())
+            .and_then(|peer| peer.send(network::Message::Chat { text: text.clone() }));
+        match result {
+            Ok(()) => {
+                self.add_chat_message(true, text);
+                self.chat_input.update(cx, |state, cx| state.set_value("", window, cx));
+            }
+            Err(error) => self.notice = error,
+        }
         cx.notify();
     }
 
@@ -307,6 +373,28 @@ impl Render for ChessApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let title = self.game_over.clone().unwrap_or_else(|| self.game.status());
         let mode_name = match self.mode { Mode::Local => "JOGO LOCAL", Mode::Computer => "CONTRA O MOTOR", Mode::P2p => "MULTIPLAYER P2P" };
+        // Show newest messages first so recent chat stays visible without scrolling.
+        let chat_rows = self.chat_messages.iter().rev().map(|message| {
+            let sender = if message.mine { "Você" } else { "Adversário" };
+            let background = if message.mine { 0x354B2F } else { 0x343432 };
+            div().w_full().flex().flex_col().gap_1()
+                .child(div().text_xs().text_color(rgb(0xBABAB2)).child(sender))
+                .child(div().w_full().p_2().rounded_md()
+                    .bg(rgb(background)).text_sm().text_color(rgb(0xF5F5F2))
+                    .child(message.text.clone()))
+        }).collect::<Vec<_>>();
+        let chat_panel = div().flex().flex_col().gap_2()
+            .child(div().text_color(rgb(0xEAEAE5)).child("Chat P2P"))
+            .child(div().text_xs().text_color(rgb(0xA5A59E))
+                .child(if self.connected { "Conectado — mensagens diretas" } else { "Disponível após conectar" }))
+            .child(div().id("p2p-chat-history")
+                .h(px(165.)).overflow_y_scroll().flex().flex_col().gap_2()
+                .children(chat_rows))
+            .child(Input::new(&self.chat_input))
+            .child(Button::new("send-chat").primary().label("Enviar")
+                .on_click(cx.listener(|this, _, window, cx| this.send_chat(window, cx))))
+            .child(div().text_xs().text_color(rgb(0xA5A59E))
+                .child("Enter para enviar. Até 400 caracteres. Sem criptografia."));
         let side = div()
             .id("sidebar")
             .w(px(325.)).h(px(655.)).overflow_y_scroll()
@@ -315,6 +403,7 @@ impl Render for ChessApp {
             .child(div().text_xs().text_color(rgb(0x82BC5F)).child(mode_name))
             .child(div().text_xl().text_color(rgb(0xF5F5F2)).child(title))
             .child(div().text_sm().text_color(rgb(0xB6B6AE)).child(self.notice.clone()))
+            .child(if self.mode == Mode::P2p { chat_panel } else { div() })
             .child(div().h(px(1.)).bg(rgb(0x40403D)))
             .child(div().text_color(rgb(0xEAEAE5)).child("Jogar"))
             .child(Button::new("local").label("Duas pessoas (local)").on_click(cx.listener(|this,_,_,cx| this.reset(Mode::Local, cx))))
