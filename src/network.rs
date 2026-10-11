@@ -37,14 +37,14 @@ pub struct Peer {
 
 impl Peer {
     pub fn host() -> Self {
-        Self::start(None)
+        Self::start(None, format!("0.0.0.0:{PORT}"))
     }
 
     pub fn join(address: String) -> Self {
-        Self::start(Some(address))
+        Self::start(Some(address), String::new())
     }
 
-    fn start(address: Option<String>) -> Self {
+    fn start(address: Option<String>, bind_address: String) -> Self {
         let (event_tx, incoming) = mpsc::channel();
         let (outgoing, outgoing_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -62,15 +62,15 @@ impl Peer {
                     TcpStream::connect_timeout(&address, Duration::from_secs(8))
                 }
                 None => {
-                    let bind = format!("0.0.0.0:{PORT}");
-                    let listener = match TcpListener::bind(&bind) {
+                    let listener = match TcpListener::bind(&bind_address) {
                         Ok(listener) => listener,
                         Err(e) => {
                             let _ = event_tx.send(Event::Error(format!("Não foi possível hospedar: {e}")));
                             return;
                         }
                     };
-                    let _ = event_tx.send(Event::Listening(bind));
+                    let bound = listener.local_addr().map(|addr| addr.to_string()).unwrap_or(bind_address);
+                    let _ = event_tx.send(Event::Listening(bound));
                     let _ = listener.set_nonblocking(true);
                     loop {
                         if worker_stop.load(Ordering::Relaxed) { return; }
@@ -188,4 +188,46 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
     }
+    #[test]
+    fn peers_exchange_moves_over_loopback() {
+        let host = Peer::start(None, "127.0.0.1:0".into());
+        let listen = host.incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Event::Listening(address) = listen else {
+            panic!("expected listener address, got {listen:?}");
+        };
+        let guest = Peer::join(address);
+        assert!(matches!(
+            host.incoming.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Event::Connected
+        ));
+        assert!(matches!(
+            guest.incoming.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Event::Connected
+        ));
+        host.send(Message::Move { ply: 0, uci: "e2e4".into() }).unwrap();
+        let event = guest.incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(event, Event::Message(Message::Move { ply: 0, uci }) if uci == "e2e4"));
+        guest.send(Message::Move { ply: 1, uci: "e7e5".into() }).unwrap();
+        let event = host.incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(event, Event::Message(Message::Move { ply: 1, uci }) if uci == "e7e5"));
+    }
+
+    #[test]
+    fn dropping_host_releases_listener() {
+        let host = Peer::start(None, "127.0.0.1:0".into());
+        let event = host.incoming.recv_timeout(Duration::from_secs(5)).unwrap();
+        let Event::Listening(address) = event else { panic!("listener missing"); };
+        drop(host);
+        // The old listener thread must terminate soon instead of holding a port forever.
+        let mut success = false;
+        for _ in 0..40 {
+            if TcpListener::bind(&address).is_ok() {
+                success = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(success, "listener was not released");
+    }
+
 }
