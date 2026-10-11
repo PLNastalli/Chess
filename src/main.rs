@@ -277,7 +277,7 @@ impl Render for ChessApp {
             .child(div().h(px(1.)).bg(rgb(0x40403D)))
             .child(div().text_sm().text_color(rgb(0xEAEAE5)).child("Histórico de lances"))
             .child(div().id("move-history").max_h(px(180.)).overflow_y_scroll()
-                .child(self.game.notation.chunks(2).enumerate().map(|(i, pair)| {
+                .children(self.game.notation.chunks(2).enumerate().map(|(i, pair)| {
                     let white = pair.first().cloned().unwrap_or_default();
                     let black = pair.get(1).cloned().unwrap_or_default();
                     div().py_1().text_sm().text_color(rgb(0xDCDCD6))
