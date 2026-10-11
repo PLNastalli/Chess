@@ -27,6 +27,8 @@ struct ChessApp {
     engine_result: Option<Receiver<Option<String>>>,
     address: Entity<InputState>,
     notice: String,
+    promotion: Role,
+    game_over: Option<String>,
 }
 
 impl ChessApp {
@@ -45,6 +47,8 @@ impl ChessApp {
                     .default_value("127.0.0.1:50555")
             }),
             notice: "Escolha o modo de jogo.".into(),
+            promotion: Role::Queen,
+            game_over: None,
         }
     }
 
@@ -71,6 +75,7 @@ impl ChessApp {
                     self.notice = "Conectado! Partida P2P iniciada.".into();
                 }
                 network::Event::Message(network::Message::Move { ply, uci }) => {
+                    if self.game_over.is_some() { continue; }
                     if !self.connected || self.game.is_finished() || self.game.moves.len() != ply
                         || self.game.turn() == self.player || self.game.make_move(&uci).is_err() {
                         self.notice = "Adversário enviou um lance inválido. Partida encerrada.".into();
@@ -82,15 +87,17 @@ impl ChessApp {
                     }
                 }
                 network::Event::Message(network::Message::Resign) => {
-                    self.notice = "Adversário desistiu. Você venceu.".into();
+                    self.notice = "Adversário desistiu.".into();
+                    self.game_over = Some("Você venceu por desistência".into());
                     self.connected = false;
-                    self.peer = None;
                 }
                 network::Event::Message(network::Message::Hello { .. }) => {}
                 network::Event::Disconnected => {
-                    self.notice = "Adversário desconectou.".into();
-                    self.connected = false;
-                    self.peer = None;
+                    if self.connected && self.game_over.is_none() {
+                        self.notice = "Adversário desconectou.".into();
+                        self.connected = false;
+                        self.peer = None;
+                    }
                 }
                 network::Event::Error(message) => {
                     self.notice = message;
@@ -123,6 +130,7 @@ impl ChessApp {
         self.connected = false;
         self.peer = None;
         self.engine_result = None;
+        self.game_over = None;
         self.notice = match mode {
             Mode::Local => "Partida local. Brancas começam.".into(),
             Mode::Computer => "Você joga de brancas contra o motor.".into(),
@@ -147,6 +155,41 @@ impl ChessApp {
         cx.notify();
     }
 
+    fn undo(&mut self, cx: &mut Context<Self>) {
+        if self.mode == Mode::P2p {
+            self.notice = "Desfazer não está disponível no multiplayer.".into();
+        } else {
+            let waiting = self.engine_result.take().is_some();
+            let count = if self.mode == Mode::Computer && !waiting && self.game.moves.len() % 2 == 0 {
+                2
+            } else {
+                1
+            };
+            let mut reverted = false;
+            for _ in 0..count { reverted |= self.game.undo(); }
+            self.selected = None;
+            self.game_over = None;
+            self.notice = if reverted { "Último lance desfeito.".into() } else { "Nenhum lance para desfazer.".into() };
+        }
+        cx.notify();
+    }
+
+    fn resign(&mut self, cx: &mut Context<Self>) {
+        if self.mode != Mode::P2p || !self.connected || self.game_over.is_some() {
+            self.notice = "Não há uma partida P2P ativa.".into();
+        } else if let Some(peer) = &self.peer {
+            match peer.send(network::Message::Resign) {
+                Ok(()) => {
+                    self.game_over = Some("Você desistiu".into());
+                    self.connected = false;
+                    self.notice = "Desistência enviada ao adversário.".into();
+                }
+                Err(error) => self.notice = error,
+            }
+        }
+        cx.notify();
+    }
+
     fn schedule_engine(&mut self) {
         let position = self.game.position.clone();
         let (tx, rx) = mpsc::channel();
@@ -158,7 +201,7 @@ impl ChessApp {
     }
 
     fn select_square(&mut self, square: Square, cx: &mut Context<Self>) {
-        if self.game.is_finished() || self.engine_result.is_some() {
+        if self.game.is_finished() || self.game_over.is_some() || self.engine_result.is_some() {
             return;
         }
         if self.mode == Mode::P2p && (!self.connected || self.game.turn() != self.player) {
@@ -180,7 +223,16 @@ impl ChessApp {
                 p.role == Role::Pawn && (square.rank() == shakmaty::Rank::Eighth
                     || square.rank() == shakmaty::Rank::First)
             );
-            let uci = format!("{from}{square}{}", if promotion { "q" } else { "" });
+            let promotion_suffix = if promotion {
+                match self.promotion {
+                    Role::Queen => "q",
+                    Role::Rook => "r",
+                    Role::Bishop => "b",
+                    Role::Knight => "n",
+                    _ => "q",
+                }
+            } else { "" };
+            let uci = format!("{from}{square}{promotion_suffix}");
             let ply = self.game.moves.len();
             match self.game.make_move(&uci) {
                 Ok(()) => {
@@ -253,7 +305,7 @@ impl ChessApp {
 
 impl Render for ChessApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.game.status();
+        let title = self.game_over.clone().unwrap_or_else(|| self.game.status());
         let mode_name = match self.mode { Mode::Local => "JOGO LOCAL", Mode::Computer => "CONTRA O MOTOR", Mode::P2p => "MULTIPLAYER P2P" };
         let side = div()
             .id("sidebar")
@@ -267,11 +319,22 @@ impl Render for ChessApp {
             .child(div().text_color(rgb(0xEAEAE5)).child("Jogar"))
             .child(Button::new("local").label("Duas pessoas (local)").on_click(cx.listener(|this,_,_,cx| this.reset(Mode::Local, cx))))
             .child(Button::new("computer").primary().label("Jogar contra o motor").on_click(cx.listener(|this,_,_,cx| this.reset(Mode::Computer, cx))))
+            .child(Button::new("undo").label("Desfazer lance").on_click(cx.listener(|this,_,_,cx| this.undo(cx))))
+            .child(div().text_sm().text_color(rgb(0xB7B7B0)).child("Promoção de peão"))
+            .child(div().flex().gap_2()
+                .child(Button::new("promotion-queen").label("Dama").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Queen; cx.notify(); })))
+                .child(Button::new("promotion-rook").label("Torre").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Rook; cx.notify(); })))
+                .child(Button::new("promotion-bishop").label("Bispo").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Bishop; cx.notify(); })))
+                .child(Button::new("promotion-knight").label("Cavalo").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Knight; cx.notify(); }))))
+            .child(div().text_xs().text_color(rgb(0x82BC5F)).child(format!("Promoção selecionada: {}", match self.promotion {
+                Role::Queen => "Dama", Role::Rook => "Torre", Role::Bishop => "Bispo", Role::Knight => "Cavalo", _ => "Dama"
+            })))
             .child(div().h(px(1.)).bg(rgb(0x40403D)))
             .child(div().text_color(rgb(0xEAEAE5)).child("Partida P2P direta"))
             .child(Button::new("host").label("Hospedar (brancas)").on_click(cx.listener(|this,_,_,cx| this.host(cx))))
             .child(Input::new(&self.address))
             .child(Button::new("join").label("Entrar pelo IP (pretas)").on_click(cx.listener(|this,_,_,cx| this.join(cx))))
+            .child(Button::new("resign").label("Desistir da partida P2P").on_click(cx.listener(|this,_,_,cx| this.resign(cx))))
             .child(div().text_xs().text_color(rgb(0xB6B6AE))
                 .child("Sem servidor central. Para jogar pela internet, abra a porta TCP 50555 no roteador do anfitrião ou use VPN."))
             .child(div().h(px(1.)).bg(rgb(0x40403D)))
@@ -297,7 +360,7 @@ impl Render for ChessApp {
                     ))
                     .child(self.board(cx))
                     .child(div().text_color(rgb(0xB7B7B0)).text_sm().child(
-                        "Clique na peça e depois na casa de destino. Promoção automática para dama."
+                        "Clique na peça e depois na casa. Escolha a promoção no painel lateral."
                     )))
                 .child(side))
     }
