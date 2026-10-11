@@ -3,6 +3,7 @@
 mod engine;
 mod game;
 mod network;
+mod ui;
 
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
@@ -18,6 +19,19 @@ enum Mode {
     Computer,
     P2p,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AppTab { Play, Puzzles, Learn, Train, Watch, Community, Other }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoardInteraction { Play, Puzzle, Preview }
+const PUZZLES: [(&str, &str); 2] = [
+    ("7k/6pp/5Q2/8/8/8/8/6K1 w - - 0 1", "f6f8"),
+    ("7k/5K2/6Q1/8/8/8/8/8 w - - 0 1", "g6g7"),
+];
+const STUDY_MOVES: [&str; 16] = [
+    "e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6",
+    "b5a4", "g8f6", "e1g1", "f8e7", "f1e1", "b7b5",
+    "a4b3", "d7d6", "c2c3", "e8g8",
+];
 
 #[derive(Clone)]
 struct ChatEntry {
@@ -29,6 +43,18 @@ const MAX_CHAT_HISTORY: usize = 100;
 
 struct ChessApp {
     game: game::Game,
+    tab: AppTab,
+    search_input: Entity<InputState>,
+    puzzle_game: game::Game,
+    puzzle_selected: Option<Square>,
+    puzzle_index: usize,
+    puzzle_solved: bool,
+    puzzle_notice: String,
+    lesson_index: usize,
+    study_game: game::Game,
+    study_ply: usize,
+    engine_depth: u8,
+    flip_board: bool,
     selected: Option<Square>,
     mode: Mode,
     player: Color,
@@ -60,6 +86,18 @@ impl ChessApp {
         );
         Self {
             game: game::Game::default(),
+            tab: AppTab::Play,
+            search_input: cx.new(|cx| InputState::new(window, cx).placeholder("Buscar aba...")),
+            puzzle_game: game::Game::from_fen(PUZZLES[0].0).expect("valid puzzle FEN"),
+            puzzle_selected: None,
+            puzzle_index: 0,
+            puzzle_solved: false,
+            puzzle_notice: "Selecione uma peça e encontre o mate.".into(),
+            lesson_index: 0,
+            study_game: game::Game::default(),
+            study_ply: 0,
+            engine_depth: 3,
+            flip_board: false,
             selected: None,
             mode: Mode::Local,
             player: Color::White,
@@ -68,8 +106,7 @@ impl ChessApp {
             engine_result: None,
             address: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("IP do anfitrião:50555")
-                    .default_value("127.0.0.1:50555")
+                    .placeholder("IPv4 do anfitrião:50555")
             }),
             chat_input,
             _chat_subscription: chat_subscription,
@@ -95,8 +132,8 @@ impl ChessApp {
         let events: Vec<_> = self.peer.as_ref().map(|p| p.incoming.try_iter().take(32).collect()).unwrap_or_default();
         for event in events {
             match event {
-                network::Event::Listening(bind) => {
-                    self.notice = format!("Aguardando adversário em {bind}. Compartilhe seu IP.");
+                network::Event::Listening(_bind) => {
+                    self.notice = format!("Hospedagem na porta TCP {}. Use ipconfig para achar seu IPv4 e compartilhe IP:50555; não use 0.0.0.0.", network::PORT);
                 }
                 network::Event::Connected => {
                     self.connected = true;
@@ -215,7 +252,12 @@ impl ChessApp {
     }
 
     fn join(&mut self, cx: &mut Context<Self>) {
-        let address = self.address.read(cx).value().to_string();
+        let address = self.address.read(cx).value().trim().to_string();
+        if address.is_empty() {
+            self.notice = "Informe o IP do anfitrião:50555. O anfitrião deve clicar em Hospedar primeiro.".into();
+            cx.notify();
+            return;
+        }
         self.reset(Mode::P2p, cx);
         self.player = Color::Black;
         self.peer = Some(network::Peer::join(address));
@@ -260,10 +302,11 @@ impl ChessApp {
 
     fn schedule_engine(&mut self) {
         let position = self.game.position.clone();
+        let depth = self.engine_depth;
         let (tx, rx) = mpsc::channel();
         self.engine_result = Some(rx);
         std::thread::spawn(move || {
-            let result = engine::best_move(&position, 3);
+            let result = engine::best_move(&position, depth);
             let _ = tx.send(result);
         });
     }
@@ -329,9 +372,114 @@ impl ChessApp {
         cx.notify();
     }
 
+
+    fn select_puzzle_square(&mut self, square: Square, cx: &mut Context<Self>) {
+        if self.puzzle_solved {
+            return;
+        }
+        let piece = self.puzzle_game.position.board().piece_at(square);
+        match self.puzzle_selected {
+            Some(from) if from == square => self.puzzle_selected = None,
+            Some(_) if piece.is_some_and(|p| p.color == self.puzzle_game.turn()) => {
+                self.puzzle_selected = Some(square);
+            }
+            Some(from) => {
+                let uci = format!("{from}{square}");
+                if uci == PUZZLES[self.puzzle_index].1
+                    && self.puzzle_game.make_move(&uci).is_ok()
+                {
+                    self.puzzle_solved = true;
+                    self.puzzle_notice = "Correto! Mate encontrado.".into();
+                } else {
+                    self.puzzle_notice = "Esse lance não é o mate. Tente outra vez.".into();
+                }
+                self.puzzle_selected = None;
+            }
+            None if piece.is_some_and(|p| p.color == self.puzzle_game.turn()) => {
+                self.puzzle_selected = Some(square);
+            }
+            None => {}
+        }
+        cx.notify();
+    }
+
+    fn restart_puzzle(&mut self, cx: &mut Context<Self>) {
+        self.puzzle_game = game::Game::from_fen(PUZZLES[self.puzzle_index].0)
+            .expect("bundled puzzle FEN valid");
+        self.puzzle_selected = None;
+        self.puzzle_solved = false;
+        self.puzzle_notice = "Encontre o mate em um lance.".into();
+        cx.notify();
+    }
+
+    fn next_puzzle(&mut self, cx: &mut Context<Self>) {
+        self.puzzle_index = (self.puzzle_index + 1) % PUZZLES.len();
+        self.restart_puzzle(cx);
+    }
+
+    fn study_step(&mut self, forward: bool, cx: &mut Context<Self>) {
+        self.study_ply = if forward {
+            (self.study_ply + 1).min(STUDY_MOVES.len())
+        } else {
+            self.study_ply.saturating_sub(1)
+        };
+        self.study_game = game::Game::default();
+        for mv in STUDY_MOVES.iter().take(self.study_ply) {
+            if self.study_game.make_move(mv).is_err() {
+                self.study_ply = 0;
+                self.study_game = game::Game::default();
+                break;
+            }
+        }
+        cx.notify();
+    }
+
+    fn search_sections(&mut self, cx: &mut Context<Self>) {
+        let q = self.search_input.read(cx).value().to_lowercase();
+        let q = q.trim();
+        let tab = if q.contains("proble") || q.contains("puzzle") || q.contains("tátic") {
+            Some(AppTab::Puzzles)
+        } else if q.contains("apren") || q.contains("liç") {
+            Some(AppTab::Learn)
+        } else if q.contains("trein") || q.contains("motor") {
+            Some(AppTab::Train)
+        } else if q.contains("assist") || q.contains("video") || q.contains("abertura") {
+            Some(AppTab::Watch)
+        } else if q.contains("comun") || q.contains("chat") || q.contains("amig") {
+            Some(AppTab::Community)
+        } else if q.contains("config") || q.contains("outro") {
+            Some(AppTab::Other)
+        } else if q.contains("jog") || q.contains("partida") || q.contains("xadrez") {
+            Some(AppTab::Play)
+        } else {
+            None
+        };
+        if let Some(tab) = tab {
+            self.tab = tab;
+        } else {
+            self.tab = AppTab::Play;
+            self.notice = "Nenhuma seção encontrada. Busque Jogar, Problemas, Aprender, Treinar, Assistir, Comunidade ou Outros.".into();
+        }
+        cx.notify();
+    }
+
     fn board(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let flipped = self.mode == Mode::P2p && self.player == Color::Black;
-        let targets = self.selected.map(|sq| self.game.legal_targets(sq)).unwrap_or_default();
+        self.board_for(&self.game, self.selected, BoardInteraction::Play, cx)
+    }
+
+    fn board_for(
+        &self,
+        game: &game::Game,
+        selected: Option<Square>,
+        interaction: BoardInteraction,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let flipped = interaction == BoardInteraction::Play && (if self.mode == Mode::P2p {
+            self.player == Color::Black
+        } else {
+            self.flip_board
+        });
+        let targets = selected.map(|sq| game.legal_targets(sq)).unwrap_or_default();
         let mut ranks = Vec::new();
         for visual_rank in 0..8_u32 {
             let mut row = Vec::new();
@@ -341,14 +489,14 @@ impl ChessApp {
                 let square = Square::new(rank * 8 + file);
                 let is_light = (file + rank) % 2 == 1;
                 let mut bg = if is_light { 0xEEEED2 } else { 0x769656 };
-                if self.game.last.is_some_and(|(from,to)| from == square || to == square) {
+                if game.last.is_some_and(|(from,to)| from == square || to == square) {
                     bg = if is_light { 0xF6F669 } else { 0xBACA44 };
                 }
-                if self.selected == Some(square) {
+                if selected == Some(square) {
                     bg = 0xF4D35E;
                 }
-                let glyph = self.game.piece_glyph(square);
-                let is_white = self.game.position.board().piece_at(square)
+                let glyph = game.piece_glyph(square);
+                let is_white = game.position.board().piece_at(square)
                     .is_some_and(|piece| piece.color == Color::White);
                 // Both sides use solid silhouettes. Outline them against both
                 // green and cream squares; the original white Unicode chess
@@ -357,7 +505,7 @@ impl ChessApp {
                 let outline = if is_white { 0x33372F } else { 0xEFEADC };
                 let target = targets.contains(&square);
                 let piece_element = if glyph.is_empty() {
-                    div().w(px(56.)).h(px(56.))
+                    div().w(px(64.)).h(px(64.))
                         .flex().items_center().justify_center()
                         .text_size(px(20.)).text_color(rgb(0x2F5131))
                         .child(if target { "●" } else { "" })
@@ -366,31 +514,35 @@ impl ChessApp {
                         (-1.5, 0.), (1.5, 0.), (0., -1.5), (0., 1.5),
                         (-1., -1.), (-1., 1.), (1., -1.), (1., 1.),
                     ];
-                    div().relative().w(px(56.)).h(px(56.))
+                    div().relative().w(px(64.)).h(px(64.))
                         .children(offsets.into_iter().map(|(x, y)| {
                             div().absolute().top(px(y)).left(px(x))
-                                .w(px(56.)).h(px(56.))
+                                .w(px(64.)).h(px(64.))
                                 .flex().items_center().justify_center()
-                                .text_size(px(52.)).text_color(rgb(outline))
+                                .text_size(px(60.)).text_color(rgb(outline))
                                 .font_family("Segoe UI Symbol")
                                 .child(glyph)
                         }))
                         .child(
                             div().absolute().inset_0()
                                 .flex().items_center().justify_center()
-                                .text_size(px(52.)).text_color(rgb(fill))
+                                .text_size(px(60.)).text_color(rgb(fill))
                                 .font_family("Segoe UI Symbol")
                                 .child(glyph)
                         )
                 };
                 row.push(div()
                     .id(format!("square-{square}"))
-                    .w(px(64.)).h(px(64.))
+                    .w(px(72.)).h(px(72.))
                     .flex().items_center().justify_center()
                     .bg(rgb(bg))
                     .cursor_pointer()
                     .hover(|style| style.opacity(0.88))
-                    .on_click(cx.listener(move |this, _, _, cx| this.select_square(square, cx)))
+                    .on_click(cx.listener(move |this, _, _, cx| match interaction {
+                        BoardInteraction::Play => this.select_square(square, cx),
+                        BoardInteraction::Puzzle => this.select_puzzle_square(square, cx),
+                        BoardInteraction::Preview => {}
+                    }))
                     .child(piece_element));
             }
             ranks.push(div().flex().children(row));
@@ -401,97 +553,17 @@ impl ChessApp {
 
 impl Render for ChessApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = self.game_over.clone().unwrap_or_else(|| self.game.status());
-        let mode_name = match self.mode { Mode::Local => "JOGO LOCAL", Mode::Computer => "CONTRA O MOTOR", Mode::P2p => "MULTIPLAYER P2P" };
-        // Show newest messages first so recent chat stays visible without scrolling.
-        let chat_rows = self.chat_messages.iter().rev().map(|message| {
-            let sender = if message.mine { "Você" } else { "Adversário" };
-            let background = if message.mine { 0x354B2F } else { 0x343432 };
-            div().w_full().flex().flex_col().gap_1()
-                .child(div().text_xs().text_color(rgb(0xBABAB2)).child(sender))
-                .child(div().w_full().p_2().rounded_md()
-                    .bg(rgb(background)).text_sm().text_color(rgb(0xF5F5F2))
-                    .child(message.text.clone()))
-        }).collect::<Vec<_>>();
-        let chat_panel = div().flex().flex_col().gap_2()
-            .child(div().text_color(rgb(0xEAEAE5)).child("Chat P2P"))
-            .child(div().text_xs().text_color(rgb(0xA5A59E))
-                .child(if self.connected { "Conectado — mensagens diretas" } else { "Disponível após conectar" }))
-            .child(div().id("p2p-chat-history")
-                .h(px(165.)).overflow_y_scroll().flex().flex_col().gap_2()
-                .children(chat_rows))
-            .child(Input::new(&self.chat_input))
-            .child(Button::new("send-chat").primary().label("Enviar")
-                .on_click(cx.listener(|this, _, window, cx| this.send_chat(window, cx))))
-            .child(div().text_xs().text_color(rgb(0xA5A59E))
-                .child("Enter para enviar. Até 400 caracteres. Sem criptografia."));
-        let side = div()
-            .id("sidebar")
-            .w(px(325.)).h(px(655.)).overflow_y_scroll()
-            .p_5().rounded_lg().bg(rgb(0x252522))
-            .flex().flex_col().gap_4()
-            .child(div().text_xs().text_color(rgb(0x82BC5F)).child(mode_name))
-            .child(div().text_xl().text_color(rgb(0xF5F5F2)).child(title))
-            .child(div().text_sm().text_color(rgb(0xB6B6AE)).child(self.notice.clone()))
-            .child(if self.mode == Mode::P2p { chat_panel } else { div() })
-            .child(div().h(px(1.)).bg(rgb(0x40403D)))
-            .child(div().text_color(rgb(0xEAEAE5)).child("Jogar"))
-            .child(Button::new("local").label("Duas pessoas (local)").on_click(cx.listener(|this,_,_,cx| this.reset(Mode::Local, cx))))
-            .child(Button::new("computer").primary().label("Jogar contra o motor").on_click(cx.listener(|this,_,_,cx| this.reset(Mode::Computer, cx))))
-            .child(Button::new("undo").label("Desfazer lance").on_click(cx.listener(|this,_,_,cx| this.undo(cx))))
-            .child(div().text_sm().text_color(rgb(0xB7B7B0)).child("Promoção de peão"))
-            .child(div().flex().gap_2()
-                .child(Button::new("promotion-queen").label("Dama").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Queen; cx.notify(); })))
-                .child(Button::new("promotion-rook").label("Torre").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Rook; cx.notify(); })))
-                .child(Button::new("promotion-bishop").label("Bispo").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Bishop; cx.notify(); })))
-                .child(Button::new("promotion-knight").label("Cavalo").on_click(cx.listener(|this,_,_,cx| { this.promotion = Role::Knight; cx.notify(); }))))
-            .child(div().text_xs().text_color(rgb(0x82BC5F)).child(format!("Promoção selecionada: {}", match self.promotion {
-                Role::Queen => "Dama", Role::Rook => "Torre", Role::Bishop => "Bispo", Role::Knight => "Cavalo", _ => "Dama"
-            })))
-            .child(div().h(px(1.)).bg(rgb(0x40403D)))
-            .child(div().text_color(rgb(0xEAEAE5)).child("Partida P2P direta"))
-            .child(Button::new("host").label("Hospedar (brancas)").on_click(cx.listener(|this,_,_,cx| this.host(cx))))
-            .child(Input::new(&self.address))
-            .child(Button::new("join").label("Entrar pelo IP (pretas)").on_click(cx.listener(|this,_,_,cx| this.join(cx))))
-            .child(Button::new("resign").label("Desistir da partida P2P").on_click(cx.listener(|this,_,_,cx| this.resign(cx))))
-            .child(div().text_xs().text_color(rgb(0xB6B6AE))
-                .child("Sem servidor central. Para jogar pela internet, abra a porta TCP 50555 no roteador do anfitrião ou use VPN."))
-            .child(div().h(px(1.)).bg(rgb(0x40403D)))
-            .child(div().text_sm().text_color(rgb(0xEAEAE5)).child("Histórico de lances"))
-            .child(div().id("move-history").max_h(px(180.)).overflow_y_scroll()
-                .children(self.game.notation.chunks(2).enumerate().map(|(i, pair)| {
-                    let white = pair.first().cloned().unwrap_or_default();
-                    let black = pair.get(1).cloned().unwrap_or_default();
-                    div().py_1().text_sm().text_color(rgb(0xDCDCD6))
-                        .child(format!("{}.  {:<9} {}", i + 1, white, black))
-                }).collect::<Vec<_>>()));
-
-        div()
-            .size_full().bg(rgb(0x181816))
-            .flex().flex_col().p_6().gap_5()
-            .child(div().flex().items_center().justify_between()
-                .child(div().text_2xl().text_color(rgb(0xF0F0EA)).child("ROOKERY"))
-                .child(div().text_sm().text_color(rgb(0xA7A7A0)).child("RUST  ·  GPUI  ·  P2P")))
-            .child(div().flex().items_start().justify_center().gap_6()
-                .child(div().flex().flex_col().gap_3()
-                    .child(div().text_color(rgb(0xEAEAE5)).child(
-                        if self.mode == Mode::P2p && self.player == Color::Black { "Você: Pretas" } else { "Brancas" }
-                    ))
-                    .child(self.board(cx))
-                    .child(div().text_color(rgb(0xB7B7B0)).text_sm().child(
-                        "Clique na peça e depois na casa. Escolha a promoção no painel lateral."
-                    )))
-                .child(side))
+        self.render_layout(cx)
     }
 }
 
 fn main() {
     application().with_assets(assets::Assets).run(|cx| {
         init(cx);
-        let bounds = Bounds::centered(None, size(px(1040.), px(735.)), cx);
+        let bounds = Bounds::centered(None, size(px(1420.), px(900.)), cx);
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(990.), px(650.))),
+            window_min_size: Some(size(px(1220.), px(740.))),
             ..Default::default()
         };
         open_window(options, cx, |window, cx| {
