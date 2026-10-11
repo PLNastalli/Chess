@@ -111,12 +111,12 @@ impl ChessApp {
         let result = self.engine_result.as_ref().and_then(|rx| rx.try_recv().ok());
         if let Some(best) = result {
             self.engine_result = None;
-            if self.mode == Mode::Computer && self.game.turn() == Color::Black {
-                if let Some(mv) = best {
-                    if self.game.make_move(&mv).is_ok() {
-                        self.notice = format!("Motor jogou {mv}");
-                    }
-                }
+            if self.mode == Mode::Computer
+                && self.game.turn() == Color::Black
+                && let Some(mv) = best
+                && self.game.make_move(&mv).is_ok()
+            {
+                self.notice = format!("Motor jogou {mv}");
             }
             cx.notify();
         }
@@ -239,11 +239,11 @@ impl ChessApp {
                     self.selected = None;
                     self.notice.clear();
                     if self.mode == Mode::P2p {
-                        if let Some(peer) = &self.peer {
-                            if let Err(error) = peer.send(network::Message::Move { ply, uci }) {
-                                self.notice = error;
-                                self.connected = false;
-                            }
+                        if let Some(peer) = &self.peer
+                            && let Err(error) = peer.send(network::Message::Move { ply, uci })
+                        {
+                            self.notice = error;
+                            self.connected = false;
                         }
                     } else if self.mode == Mode::Computer && !self.game.is_finished() {
                         self.schedule_engine();
