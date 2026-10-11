@@ -2,7 +2,7 @@
 //! Connections through NAT may require port forwarding or a VPN.
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufReader, Read, Write},
+    io::{self, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
     sync::{atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, Sender}, Arc},
     thread,
@@ -46,6 +46,20 @@ pub fn normalize_chat_text(raw: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+fn explain_connect_error(address: &str, error: &io::Error) -> String {
+    match error.kind() {
+        io::ErrorKind::ConnectionRefused => format!(
+            "Conexão recusada em {address} (10061). Clique em Hospedar no PC anfitrião \
+             e informe o IPv4 correto com a porta TCP {PORT}. 127.0.0.1 é o próprio PC."
+        ),
+        io::ErrorKind::TimedOut => format!(
+            "Tempo esgotado em {address}. Verifique se o anfitrião está conectado, \
+             o firewall e a porta TCP {PORT}. Entre redes diferentes, use VPN ou redirecione a porta."
+        ),
+        _ => format!("Não foi possível conectar a {address}: {error}"),
+    }
+}
+
 pub struct Peer {
     pub incoming: Receiver<Event>,
     outgoing: Sender<Message>,
@@ -67,6 +81,7 @@ impl Peer {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         thread::spawn(move || {
+            let target = address.clone();
             let stream = match address {
                 Some(address) => {
                     let address = match address.parse() {
@@ -105,7 +120,13 @@ impl Peer {
                         serve(stream, event_tx, outgoing_rx, worker_stop);
                     }
                 },
-                Err(e) => { let _ = event_tx.send(Event::Error(format!("Conexão falhou: {e}"))); }
+                Err(e) => {
+                    let reason = match target {
+                        Some(address) => explain_connect_error(&address, &e),
+                        None => format!("Erro ao aceitar conexão: {e}"),
+                    };
+                    let _ = event_tx.send(Event::Error(reason));
+                }
             }
         });
         Self { incoming, outgoing, stop }
@@ -212,6 +233,17 @@ fn serve(stream: TcpStream, tx: Sender<Event>, rx: Receiver<Message>, stop: Arc<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn explains_windows_refused_connection() {
+        let message = explain_connect_error(
+            "192.168.1.25:50555",
+            &io::Error::from(io::ErrorKind::ConnectionRefused),
+        );
+        assert!(message.contains("10061"));
+        assert!(message.contains("Hospedar"));
+        assert!(message.contains("192.168.1.25:50555"));
+    }
+
     #[test]
     fn packets_round_trip() {
         let m = Message::Move { ply: 12, uci: "e7e8q".into() };
