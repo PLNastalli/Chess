@@ -26,6 +26,21 @@ impl Default for Game {
 }
 
 impl Game {
+    /// Loads an independent puzzle/study position without touching a live match.
+    pub fn from_fen(text: &str) -> Result<Self, String> {
+        use shakmaty::{CastlingMode, fen::Fen};
+        let fen: Fen = text.parse().map_err(|_| "FEN inválida".to_string())?;
+        let position: Chess = fen.into_position(CastlingMode::Standard)
+            .map_err(|_| "Posição inválida".to_string())?;
+        Ok(Self {
+            positions: vec![position.clone()],
+            position,
+            moves: Vec::new(),
+            notation: Vec::new(),
+            last: None,
+        })
+    }
+
     pub fn turn(&self) -> Color {
         self.position.turn()
     }
@@ -151,6 +166,18 @@ mod tests {
         assert_eq!(game.piece_glyph(Square::D8), "♛");
         assert_eq!(game.piece_glyph(Square::A2), "♟");
         assert_eq!(game.piece_glyph(Square::A7), "♟");
+    }
+
+    #[test]
+    fn bundled_puzzles_have_the_expected_mate_in_one() {
+        for (fen, solution) in [
+            ("7k/6pp/5Q2/8/8/8/8/6K1 w - - 0 1", "f6f8"),
+            ("7k/5K2/6Q1/8/8/8/8/8 w - - 0 1", "g6g7"),
+        ] {
+            let mut game = Game::from_fen(fen).unwrap();
+            game.make_move(solution).unwrap();
+            assert!(game.position.is_checkmate(), "{fen}: {solution}");
+        }
     }
 
     #[test]
