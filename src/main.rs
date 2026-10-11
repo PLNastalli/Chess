@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod engine;
 mod game;
 mod network;
@@ -226,7 +228,7 @@ impl ChessApp {
             self.notice = "Desfazer não está disponível no multiplayer.".into();
         } else {
             let waiting = self.engine_result.take().is_some();
-            let count = if self.mode == Mode::Computer && !waiting && self.game.moves.len() % 2 == 0 {
+            let count = if self.mode == Mode::Computer && !waiting && self.game.moves.len().is_multiple_of(2) {
                 2
             } else {
                 1
@@ -346,9 +348,41 @@ impl ChessApp {
                     bg = 0xF4D35E;
                 }
                 let glyph = self.game.piece_glyph(square);
-                let text_color = if self.game.position.board().piece_at(square)
-                    .is_some_and(|p| p.color == Color::White) { 0xF9F9F5 } else { 0x242424 };
+                let is_white = self.game.position.board().piece_at(square)
+                    .is_some_and(|piece| piece.color == Color::White);
+                // Both sides use solid silhouettes. Outline them against both
+                // green and cream squares; the original white Unicode chess
+                // symbols were hollow and looked translucent.
+                let fill = if is_white { 0xFFF8E9 } else { 0x1D211E };
+                let outline = if is_white { 0x33372F } else { 0xEFEADC };
                 let target = targets.contains(&square);
+                let piece_element = if glyph.is_empty() {
+                    div().w(px(56.)).h(px(56.))
+                        .flex().items_center().justify_center()
+                        .text_size(px(20.)).text_color(rgb(0x2F5131))
+                        .child(if target { "●" } else { "" })
+                } else {
+                    let offsets: [(f32, f32); 8] = [
+                        (-1.5, 0.), (1.5, 0.), (0., -1.5), (0., 1.5),
+                        (-1., -1.), (-1., 1.), (1., -1.), (1., 1.),
+                    ];
+                    div().relative().w(px(56.)).h(px(56.))
+                        .children(offsets.into_iter().map(|(x, y)| {
+                            div().absolute().top(px(y)).left(px(x))
+                                .w(px(56.)).h(px(56.))
+                                .flex().items_center().justify_center()
+                                .text_size(px(52.)).text_color(rgb(outline))
+                                .font_family("Segoe UI Symbol")
+                                .child(glyph)
+                        }))
+                        .child(
+                            div().absolute().inset_0()
+                                .flex().items_center().justify_center()
+                                .text_size(px(52.)).text_color(rgb(fill))
+                                .font_family("Segoe UI Symbol")
+                                .child(glyph)
+                        )
+                };
                 row.push(div()
                     .id(format!("square-{square}"))
                     .w(px(64.)).h(px(64.))
@@ -357,11 +391,7 @@ impl ChessApp {
                     .cursor_pointer()
                     .hover(|style| style.opacity(0.88))
                     .on_click(cx.listener(move |this, _, _, cx| this.select_square(square, cx)))
-                    .child(
-                        div().text_size(px(47.)).text_color(rgb(text_color))
-                            .font_family("Segoe UI Symbol")
-                            .child(if target && glyph.is_empty() { "●" } else { glyph })
-                    ));
+                    .child(piece_element));
             }
             ranks.push(div().flex().children(row));
         }

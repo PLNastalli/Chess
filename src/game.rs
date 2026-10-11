@@ -125,19 +125,15 @@ impl Game {
         let Some(piece) = self.position.board().piece_at(square) else {
             return "";
         };
-        match (piece.color, piece.role) {
-            (Color::White, Role::King) => "♔",
-            (Color::White, Role::Queen) => "♕",
-            (Color::White, Role::Rook) => "♖",
-            (Color::White, Role::Bishop) => "♗",
-            (Color::White, Role::Knight) => "♘",
-            (Color::White, Role::Pawn) => "♙",
-            (Color::Black, Role::King) => "♚",
-            (Color::Black, Role::Queen) => "♛",
-            (Color::Black, Role::Rook) => "♜",
-            (Color::Black, Role::Bishop) => "♝",
-            (Color::Black, Role::Knight) => "♞",
-            (Color::Black, Role::Pawn) => "♟",
+        // Filled silhouettes for both colors; the board controls each
+        // piece's fill and outline instead of relying on hollow glyphs.
+        match piece.role {
+            Role::King => "♚",
+            Role::Queen => "♛",
+            Role::Rook => "♜",
+            Role::Bishop => "♝",
+            Role::Knight => "♞",
+            Role::Pawn => "♟",
         }
     }
 }
@@ -145,6 +141,17 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn white_and_black_pieces_have_filled_silhouettes() {
+        let game = Game::default();
+        assert_eq!(game.piece_glyph(Square::E1), "♚");
+        assert_eq!(game.piece_glyph(Square::E8), "♚");
+        assert_eq!(game.piece_glyph(Square::D1), "♛");
+        assert_eq!(game.piece_glyph(Square::D8), "♛");
+        assert_eq!(game.piece_glyph(Square::A2), "♟");
+        assert_eq!(game.piece_glyph(Square::A7), "♟");
+    }
 
     #[test]
     fn opening_has_twenty_legal_moves() {
