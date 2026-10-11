@@ -230,9 +230,11 @@ mod tests {
         use shakmaty::{CastlingMode, fen::Fen};
         let fen: Fen = "7k/P7/8/8/8/8/8/7K w - - 0 1".parse().unwrap();
         let pos: Chess = fen.into_position(CastlingMode::Standard).unwrap();
-        let mut game = Game::default();
-        game.position = pos.clone();
-        game.positions = vec![pos];
+        let mut game = Game {
+            position: pos.clone(),
+            positions: vec![pos],
+            ..Default::default()
+        };
         game.make_move("a7a8n").unwrap();
         assert_eq!(game.position.board().piece_at(Square::A8).unwrap().role, Role::Knight);
     }
