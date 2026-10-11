@@ -26,3 +26,13 @@ jobs:
         run: cargo test --all-targets
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Build Windows executables
+        run: cargo build --release --bins
+      - name: Upload Windows executables
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rookery-Windows-x64
+          path: |
+            target/release/rookery-chess.exe
+            target/release/rookery-engine.exe
+          if-no-files-found: error
