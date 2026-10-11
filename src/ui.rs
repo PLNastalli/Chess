@@ -203,6 +203,18 @@ impl ChessApp {
                         .child("Clique na peça e na casa de destino."))
                     .child(self.moves_panel()))
                 .child(div().flex().flex_col().gap_4()
+                    .child(div().w(px(365.)).p_5().flex().flex_col().gap_4()
+                        .child(div().text_3xl().text_color(rgb(TEXT))
+                            .child("Jogue xadrez com amigos"))
+                        .child(div().text_lg().text_color(rgb(MUTED))
+                            .child("Contra o computador, no mesmo PC ou direto com outra pessoa pela internet."))
+                        .child(Button::new("home-get-started").primary()
+                            .label("Começar a jogar")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.reset(Mode::Computer, cx);
+                                this.tab = AppTab::Play;
+                                cx.notify();
+                            }))))
                     .child(self.game_controls(cx))
                     .child(self.chat_panel(cx))))
     }

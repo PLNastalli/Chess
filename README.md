@@ -13,6 +13,19 @@ Aplicativo desktop de xadrez em **Rust**, com interface **GPUI** (motor de rende
 - **Chat P2P integrado à partida**, com mensagens instantâneas, envio por Enter ou botão e histórico em memória (até 100 mensagens).
 - Histórico de jogadas com notação SAN.
 
+## Navegação do aplicativo
+
+O Rookery usa uma interface desktop escura inspirada na organização visual de plataformas populares de xadrez. O nome, as peças e os controles são próprios.
+
+- **Jogar:** tabuleiro interativo, partidas locais, contra IA, P2P e chat.
+- **Problemas:** dois desafios interativos de xeque-mate em um lance, com verificação da resposta.
+- **Aprender:** quatro lições básicas sequenciais e prática contra o motor.
+- **Treinar:** motor próprio com profundidade selecionável (2, 3 ou 4).
+- **Assistir:** reprodução local, passo a passo, de uma sequência de Abertura Espanhola; não é streaming.
+- **Comunidade:** área para hospedar, entrar e conversar em partidas P2P por IP. Não inclui contas ou servidores públicos.
+- **Outros:** configuração de orientação do tabuleiro e detalhes do projeto.
+- **Buscar:** localiza as sete seções pela palavra digitada.
+
 ## Requisitos
 
 Rust estável atualizado e dependências nativas exigidas pelo GPUI Kit no seu sistema.
