@@ -3,8 +3,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
-    sync::mpsc::{self, Receiver, Sender},
+    net::{Shutdown, TcpListener, TcpStream},
+    sync::{atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, Sender}, Arc},
     thread,
     time::Duration,
 };
@@ -32,6 +32,7 @@ pub enum Event {
 pub struct Peer {
     pub incoming: Receiver<Event>,
     outgoing: Sender<Message>,
+    stop: Arc<AtomicBool>,
 }
 
 impl Peer {
@@ -46,6 +47,8 @@ impl Peer {
     fn start(address: Option<String>) -> Self {
         let (event_tx, incoming) = mpsc::channel();
         let (outgoing, outgoing_rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
         thread::spawn(move || {
             let stream = match address {
                 Some(address) => {
@@ -68,18 +71,27 @@ impl Peer {
                         }
                     };
                     let _ = event_tx.send(Event::Listening(bind));
-                    match listener.accept() {
-                        Ok((stream, _)) => Ok(stream),
-                        Err(e) => Err(e),
+                    let _ = listener.set_nonblocking(true);
+                    loop {
+                        if worker_stop.load(Ordering::Relaxed) { return; }
+                        match listener.accept() {
+                            Ok((stream, _)) => break Ok(stream),
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(75)),
+                            Err(e) => break Err(e),
+                        }
                     }
                 }
             };
             match stream {
-                Ok(stream) => serve(stream, event_tx, outgoing_rx),
+                Ok(stream) => {
+                    if !worker_stop.load(Ordering::Relaxed) {
+                        serve(stream, event_tx, outgoing_rx, worker_stop);
+                    }
+                },
                 Err(e) => { let _ = event_tx.send(Event::Error(format("Conexão falhou: {e}"))); }
             }
         });
-        Self { incoming, outgoing }
+        Self { incoming, outgoing, stop }
     }
 
     pub fn send(&self, message: Message) -> Result<(), String> {
@@ -87,13 +99,21 @@ impl Peer {
     }
 }
 
-fn serve(stream: TcpStream, tx: Sender<Event>, rx: Receiver<Message>) {
+impl Drop for Peer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+fn serve(stream: TcpStream, tx: Sender<Event>, rx: Receiver<Message>, stop: Arc<AtomicBool>) {
     let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
     let mut writer = match stream.try_clone() {
         Ok(clone) => clone,
         Err(e) => { let _ = tx.send(Event::Error(e.to_string())); return; }
     };
     let write_tx = tx.clone();
+    let writer_stop = stop.clone();
     thread::spawn(move || {
         let send_line = |message: Message, socket: &mut TcpStream| -> std::io::Result<()> {
             serde_json::to_writer(&mut *socket, &message)?;
@@ -115,6 +135,7 @@ fn serve(stream: TcpStream, tx: Sender<Event>, rx: Receiver<Message>) {
     let mut authenticated = false;
     let mut line = String::new();
     loop {
+        if stop.load(Ordering::Relaxed) { break; }
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) => break,
