@@ -88,11 +88,9 @@ impl ChessApp {
                 }
                 network::Event::Message(network::Message::Hello { .. }) => {}
                 network::Event::Disconnected => {
-                    if self.connected {
-                        self.notice = "Adversário desconectou.".into();
-                        self.connected = false;
-                        self.peer = None;
-                    }
+                    self.notice = "Adversário desconectou.".into();
+                    self.connected = false;
+                    self.peer = None;
                 }
                 network::Event::Error(message) => {
                     self.notice = message;
@@ -276,7 +274,7 @@ impl Render for ChessApp {
                 .child("Sem servidor central. Para jogar pela internet, abra a porta TCP 50555 no roteador do anfitrião ou use VPN."))
             .child(div().h(px(1.)).bg(rgb(0x40403D)))
             .child(div().text_sm().text_color(rgb(0xEAEAE5)).child("Histórico de lances"))
-            .child(div().max_h(px(180.)).overflow_y_scroll()
+            .child(div().id("move-history").max_h(px(180.)).overflow_y_scroll()
                 .child(self.game.notation.chunks(2).enumerate().map(|(i, pair)| {
                     let white = pair.first().cloned().unwrap_or_default();
                     let black = pair.get(1).cloned().unwrap_or_default();
@@ -306,7 +304,13 @@ impl Render for ChessApp {
 fn main() {
     application().with_assets(assets::Assets).run(|cx| {
         init(cx);
-        open_window(WindowOptions::default(), cx, |window, cx| {
+        let bounds = Bounds::centered(None, size(px(1040.), px(735.)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(990.), px(650.))),
+            ..Default::default()
+        };
+        open_window(options, cx, |window, cx| {
             window.set_window_title("Rookery — Chess in Rust");
             cx.new(|cx| {
                 let mut app = ChessApp::new(window, cx);

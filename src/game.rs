@@ -100,7 +100,7 @@ impl Game {
         if self.position.is_check() {
             format!("{turn} em xeque")
         } else {
-            format("Vez das {turn}")
+            format!("Vez das {turn}")
         }
     }
 

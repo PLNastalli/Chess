@@ -62,4 +62,4 @@ A CI de GitHub Actions executa formatação, testes e verificação estática no
 
 ## Licença
 
-MIT. GPUI Kit e shapmaty têm suas próprias licenças. Rookery é um projeto independente, sem associação com Chess.com.
+MIT. GPUI Kit e shakmaty têm suas próprias licenças. Rookery é um projeto independente, sem associação com Chess.com.

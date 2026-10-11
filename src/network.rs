@@ -2,7 +2,7 @@
 //! Connections through NAT may require port forwarding or a VPN.
 use serde::{Deserialize, Serialize};
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
     sync::{atomic::{AtomicBool, Ordering}, mpsc::{self, Receiver, Sender}, Arc},
     thread,
@@ -62,11 +62,11 @@ impl Peer {
                     TcpStream::connect_timeout(&address, Duration::from_secs(8))
                 }
                 None => {
-                    let bind = format("0.0.0.0:{PORT}");
+                    let bind = format!("0.0.0.0:{PORT}");
                     let listener = match TcpListener::bind(&bind) {
                         Ok(listener) => listener,
                         Err(e) => {
-                            let _ = event_tx.send(Event::Error(format("Não foi possível hospedar: {e}")));
+                            let _ = event_tx.send(Event::Error(format!("Não foi possível hospedar: {e}")));
                             return;
                         }
                     };
@@ -88,7 +88,7 @@ impl Peer {
                         serve(stream, event_tx, outgoing_rx, worker_stop);
                     }
                 },
-                Err(e) => { let _ = event_tx.send(Event::Error(format("Conexão falhou: {e}"))); }
+                Err(e) => { let _ = event_tx.send(Event::Error(format!("Conexão falhou: {e}"))); }
             }
         });
         Self { incoming, outgoing, stop }
@@ -121,44 +121,59 @@ fn serve(stream: TcpStream, tx: Sender<Event>, rx: Receiver<Message>, stop: Arc<
             socket.flush()
         };
         if let Err(e) = send_line(Message::Hello { version: PROTOCOL }, &mut writer) {
-            let _ = write_tx.send(Event::Error(format("Erro ao enviar handshake: {e}")));
+            let _ = write_tx.send(Event::Error(format!("Erro ao enviar handshake: {e}")));
             return;
         }
-        while let Ok(message) = rx.recv() {
-            if let Err(e) = send_line(message, &mut writer) {
-                let _ = write_tx.send(Event::Error(format("Erro de envio: {e}")));
-                break;
+        while !writer_stop.load(Ordering::Relaxed) {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(message) => {
+                    if let Err(e) = send_line(message, &mut writer) {
+                        let _ = write_tx.send(Event::Error(format!("Erro de envio: {e}")));
+                        break;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
+        let _ = writer.shutdown(Shutdown::Both);
     });
     let mut reader = BufReader::new(stream);
     let mut authenticated = false;
-    let mut line = String::new();
+    let mut packet = Vec::with_capacity(128);
+    let mut byte = [0_u8; 1];
     loop {
         if stop.load(Ordering::Relaxed) { break; }
-        line.clear();
-        match reader.read_line(&mut line) {
+        match reader.read(&mut byte) {
             Ok(0) => break,
-            Ok(_) if line.len() > 4096 => {
-                let _ = tx.send(Event::Error("Mensagem grande demais".into()));
-                break;
+            Ok(_) if byte[0] == b'\n' => {
+                let parsed = serde_json::from_slice::<Message>(&packet);
+                packet.clear();
+                match parsed {
+                    Ok(Message::Hello { version }) if !authenticated && version == PROTOCOL => {
+                        authenticated = true;
+                        let _ = tx.send(Event::Connected);
+                    }
+                    Ok(Message::Hello { .. }) => {
+                        let _ = tx.send(Event::Error("Versão P2P incompatível".into()));
+                        break;
+                    }
+                    Ok(message) if authenticated => { let _ = tx.send(Event::Message(message)); }
+                    _ => {
+                        let _ = tx.send(Event::Error("Pacote P2P inválido".into()));
+                        break;
+                    }
+                }
             }
-            Ok(_) => match serde_json::from_str::<Message>(&line) {
-                Ok(Message::Hello { version }) if !authenticated && version == PROTOCOL => {
-                    authenticated = true;
-                    let _ = tx.send(Event::Connected);
-                }
-                Ok(Message::Hello { .. }) => {
-                    let _ = tx.send(Event::Error("Versão P2P incompatível".into()));
+            Ok(_) => {
+                if packet.len() >= 4096 {
+                    let _ = tx.send(Event::Error("Mensagem P2P grande demais".into()));
                     break;
                 }
-                Ok(message) if authenticated => { let _ = tx.send(Event::Message(message)); }
-                _ => {
-                    let _ = tx.send(Event::Error("Pacote P2P inválido".into()));
-                    break;
-                }
-            },
-            Err(e) => { let _ = tx.send(Event::Error(format("Erro de leitura: {e}"))); break; }
+                packet.push(byte[0]);
+            }
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock) => continue,
+            Err(e) => { let _ = tx.send(Event::Error(format!("Erro de leitura: {e}"))); break; }
         }
     }
     let _ = tx.send(Event::Disconnected);
