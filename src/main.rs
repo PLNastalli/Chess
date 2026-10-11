@@ -5,10 +5,7 @@ mod game;
 mod network;
 mod ui;
 
-use gpui_kit::component::{
-    button::{Button, ButtonVariants},
-    input::{Input, InputEvent, InputState},
-};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use shakmaty::{Color, Position, Role, Square};
 use std::{collections::VecDeque, sync::mpsc::{self, Receiver}, time::Duration};
