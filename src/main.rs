@@ -256,7 +256,9 @@ impl Render for ChessApp {
         let title = self.game.status();
         let mode_name = match self.mode { Mode::Local => "JOGO LOCAL", Mode::Computer => "CONTRA O MOTOR", Mode::P2p => "MULTIPLAYER P2P" };
         let side = div()
-            .w(px(325.)).p_5().rounded_lg().bg(rgb(0x252522))
+            .id("sidebar")
+            .w(px(325.)).h(px(655.)).overflow_y_scroll()
+            .p_5().rounded_lg().bg(rgb(0x252522))
             .flex().flex_col().gap_4()
             .child(div().text_xs().text_color(rgb(0x82BC5F)).child(mode_name))
             .child(div().text_xl().text_color(rgb(0xF5F5F2)).child(title))
