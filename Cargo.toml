@@ -1,5 +1,6 @@
 [package]
 name = "rookery-chess"
+default-run = "rookery-chess"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"

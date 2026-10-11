@@ -38,7 +38,27 @@ A porta é **TCP 50555**. Para conexões entre redes diferentes, o anfitrião pr
 
 ### Jogabilidade
 
-Clique em uma peça e na casa de destino. Promoções são feitas automaticamente para **dama** no MVP.
+Clique em uma peça e na casa de destino. Selecione **dama, torre, bispo ou cavalo** no painel lateral para a próxima promoção. Você pode desfazer lances em partidas locais ou contra o motor, e desistir de partidas P2P.
+
+## Motor independente (UCI)
+
+O mesmo motor de xadrez pode funcionar no terminal como um programa UCI, sem abrir a janela GPUI:
+
+```bash
+cargo run --release --bin rookery-engine
+```
+
+Exemplo de comandos:
+
+```text
+uci
+isready
+position startpos moves e2e4 e7e5
+go depth 3
+quit
+```
+
+O motor responde com `bestmove <lance>`. Suporta `position startpos`, `position fen`, `go depth` (1 a 6) e `ucinewgame`. Não implementa ainda controle de tempo UCI, ponderação nem busca interrompível.
 
 ## Código
 
@@ -47,6 +67,7 @@ src/
   main.rs      interface GPUI e estados de partida
   game.rs      regras, lances legais, histórico e resultados
   engine.rs    motor negamax / alfa-beta
+  bin/rookery-engine.rs   executável UCI independente
   network.rs   protocolo P2P TCP, mensagens e conexão
 ```
 
